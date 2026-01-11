@@ -9,7 +9,8 @@ data class Driver(
     val url: String,
     val username: String,
     val password: String,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val apiToken: String? = null
 )
 
 enum class DriverStatus {

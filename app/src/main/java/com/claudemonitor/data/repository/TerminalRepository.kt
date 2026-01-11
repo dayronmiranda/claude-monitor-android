@@ -79,4 +79,60 @@ class TerminalRepository @Inject constructor(
             Result.failure(e)
         }
     }
+
+    suspend fun resumeTerminal(driver: Driver, terminalId: String): Result<Terminal> {
+        return try {
+            val api = driverRepository.getApiService(driver)
+            val response = api.resumeTerminal(terminalId)
+            if (response.success && response.data != null) {
+                Result.success(response.data)
+            } else {
+                Result.failure(Exception(response.error?.message ?: "Failed to resume terminal"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun resizeTerminal(driver: Driver, terminalId: String, rows: Int, cols: Int): Result<Unit> {
+        return try {
+            val api = driverRepository.getApiService(driver)
+            val response = api.resizeTerminal(terminalId, com.claudemonitor.data.model.ResizeRequest(rows, cols))
+            if (response.success) {
+                Result.success(Unit)
+            } else {
+                Result.failure(Exception(response.error?.message ?: "Failed to resize terminal"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteTerminal(driver: Driver, terminalId: String): Result<Unit> {
+        return try {
+            val api = driverRepository.getApiService(driver)
+            val response = api.deleteTerminal(terminalId)
+            if (response.success) {
+                Result.success(Unit)
+            } else {
+                Result.failure(Exception(response.error?.message ?: "Failed to delete terminal"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun listDirectory(driver: Driver, path: String): Result<com.claudemonitor.data.model.DirectoryListing> {
+        return try {
+            val api = driverRepository.getApiService(driver)
+            val response = api.listDirectory(path)
+            if (response.success && response.data != null) {
+                Result.success(response.data)
+            } else {
+                Result.failure(Exception(response.error?.message ?: "Failed to list directory"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 }

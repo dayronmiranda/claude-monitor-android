@@ -1,6 +1,7 @@
 package com.claudemonitor.data.model
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 
 @Serializable
 data class ApiResponse<T>(
@@ -18,5 +19,8 @@ data class ApiError(
 @Serializable
 data class HealthResponse(
     val status: String,
-    val timestamp: String
+    val timestamp: String? = null,
+    val uptime: String? = null,
+    val checks: JsonElement? = null,
+    val stats: JsonElement? = null
 )

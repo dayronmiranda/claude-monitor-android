@@ -43,4 +43,19 @@ interface ApiService {
 
     @POST("api/terminals/{id}/kill")
     suspend fun killTerminal(@Path("id") terminalId: String): ApiResponse<Unit>
+
+    @POST("api/terminals/{id}/resume")
+    suspend fun resumeTerminal(@Path("id") terminalId: String): ApiResponse<Terminal>
+
+    @POST("api/terminals/{id}/resize")
+    suspend fun resizeTerminal(
+        @Path("id") terminalId: String,
+        @Body body: ResizeRequest
+    ): ApiResponse<Unit>
+
+    @DELETE("api/terminals/{id}")
+    suspend fun deleteTerminal(@Path("id") terminalId: String): ApiResponse<Unit>
+
+    @GET("api/filesystem/dir")
+    suspend fun listDirectory(@Query("path") path: String): ApiResponse<DirectoryListing>
 }

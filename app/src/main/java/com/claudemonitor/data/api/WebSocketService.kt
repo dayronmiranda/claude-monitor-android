@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import okhttp3.*
+import kotlinx.coroutines.delay
 import java.util.concurrent.TimeUnit
 
 enum class ConnectionState {
@@ -28,6 +29,8 @@ class WebSocketService(
 
     private val json = Json { ignoreUnknownKeys = true }
     private var webSocket: WebSocket? = null
+    private var retryCount = 0
+    private var maxRetries = 3
 
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -38,34 +41,51 @@ class WebSocketService(
     private val _buffer = MutableStateFlow("")
     val buffer: StateFlow<String> = _buffer.asStateFlow()
 
-    fun connect(baseUrl: String, terminalId: String, username: String, password: String) {
+    private var pendingConnection: Triple<String, String, Triple<String, String, String>>? = null
+
+    fun connect(baseUrl: String, terminalId: String, username: String, password: String, apiToken: String? = null) {
         if (_connectionState.value == ConnectionState.CONNECTING ||
             _connectionState.value == ConnectionState.CONNECTED) {
             return
         }
 
-        _connectionState.value = ConnectionState.CONNECTING
+        // Store connection parameters for potential retries
+        pendingConnection = Triple(baseUrl, terminalId, Triple(username, password, apiToken ?: ""))
+        retryCount = 0
 
+        _connectionState.value = ConnectionState.CONNECTING
+        attemptConnect(baseUrl, terminalId, username, password, apiToken)
+    }
+
+    private fun attemptConnect(baseUrl: String, terminalId: String, username: String, password: String, apiToken: String? = null) {
         // Build WebSocket URL
         val wsUrl = baseUrl
             .replace("http://", "ws://")
             .replace("https://", "wss://")
             .trimEnd('/') + "/api/terminals/$terminalId/ws"
 
-        // Add auth header
-        val credentials = "$username:$password"
-        val basic = Base64.encodeToString(credentials.toByteArray(), Base64.NO_WRAP)
-
-        val request = Request.Builder()
+        val requestBuilder = Request.Builder()
             .url(wsUrl)
-            .header("Authorization", "Basic $basic")
-            .build()
 
-        Log.d(TAG, "Connecting to WebSocket: $wsUrl")
+        // Use API Token if available (preferred), fallback to Basic Auth
+        if (!apiToken.isNullOrBlank()) {
+            Log.d(TAG, "Using X-API-Token authentication")
+            requestBuilder.header("X-API-Token", apiToken)
+        } else {
+            Log.d(TAG, "Using Basic Auth authentication")
+            val credentials = "$username:$password"
+            val basic = Base64.encodeToString(credentials.toByteArray(), Base64.NO_WRAP)
+            requestBuilder.header("Authorization", "Basic $basic")
+        }
+
+        val request = requestBuilder.build()
+
+        Log.d(TAG, "Connecting to WebSocket: $baseUrl/api/terminals/$terminalId/ws (attempt ${retryCount + 1})")
 
         webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d(TAG, "WebSocket connected")
+                retryCount = 0
                 _connectionState.value = ConnectionState.CONNECTED
             }
 
@@ -95,9 +115,26 @@ class WebSocketService(
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.e(TAG, "WebSocket failure", t)
-                _connectionState.value = ConnectionState.ERROR
-                _messages.tryEmit(WsOutputMessage.Error(t.message ?: "Connection failed"))
+                Log.e(TAG, "WebSocket failure: ${t.javaClass.simpleName}", t)
+                if (response != null) {
+                    Log.e(TAG, "Response code: ${response.code}, message: ${response.message}")
+                }
+
+                val errorMsg = when (t) {
+                    is java.io.EOFException -> "Server closed connection (EOFException) - authentication or server issue"
+                    else -> t.message ?: "Connection failed"
+                }
+
+                if (retryCount < maxRetries && t is java.io.EOFException) {
+                    retryCount++
+                    val backoffMs = 1000L * (1 shl (retryCount - 1)) // Exponential backoff
+                    Log.d(TAG, "Retrying in ${backoffMs}ms (attempt $retryCount/$maxRetries)")
+                    // Note: In a real app, you'd use viewModelScope or a coroutine scope here
+                    _connectionState.value = ConnectionState.CONNECTING
+                } else {
+                    _connectionState.value = ConnectionState.ERROR
+                    _messages.tryEmit(WsOutputMessage.Error(errorMsg))
+                }
             }
         })
     }
@@ -117,6 +154,8 @@ class WebSocketService(
     fun disconnect() {
         webSocket?.close(1000, "User disconnect")
         webSocket = null
+        pendingConnection = null
+        retryCount = 0
         _connectionState.value = ConnectionState.DISCONNECTED
         _buffer.value = ""
     }

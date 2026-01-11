@@ -98,7 +98,8 @@ class TerminalViewModel @Inject constructor(
             baseUrl = driver.url,
             terminalId = terminalId,
             username = driver.username,
-            password = driver.password
+            password = driver.password,
+            apiToken = driver.apiToken
         )
     }
 

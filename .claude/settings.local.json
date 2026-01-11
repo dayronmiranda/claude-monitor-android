@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew clean:*)",
+      "Bash(./gradlew build:*)",
+      "Bash(./gradlew compileDebugKotlin:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nFix WebSocket authentication and sync backend API changes\n\nUpdated Android client to match backend API specification:\n\n1. Authentication: Switch WebSocket to use X-API-Token header \\(preferred\\) with fallback to Basic Auth\n   - Fixes EOFException errors caused by incorrect auth headers\n   - Added apiToken field to Driver model for future token support\n\n2. Models: Sync Terminal/TerminalConfig with backend:\n   - Terminal: Added sessionId, model, canResume, startedAt, createdAt, lastAccessAt fields\n   - TerminalConfig: Added support for id, command, model, system_prompt, allowed_tools, etc.\n   - Added new models: ResizeRequest, DirectoryEntry, DirectoryListing\n   - Fixed HealthResponse to match backend structure\n\n3. API Endpoints: Add missing terminal operations:\n   - POST /api/terminals/{id}/resume - Resume a saved terminal\n   - POST /api/terminals/{id}/resize - Resize terminal\n   - DELETE /api/terminals/{id} - Delete terminal\n   - GET /api/filesystem/dir - List directory contents\n\n4. Repository: Extend TerminalRepository with new methods:\n   - resumeTerminal\\(\\), resizeTerminal\\(\\), deleteTerminal\\(\\), listDirectory\\(\\)\n\n5. Dependency: Update Compose BOM to 2024.06.00 for compatibility\n\nCo-Authored-By: Claude Haiku 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
+    ]
+  }
+}
