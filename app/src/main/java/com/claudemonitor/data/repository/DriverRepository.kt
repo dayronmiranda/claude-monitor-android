@@ -1,0 +1,167 @@
+package com.claudemonitor.data.repository
+
+import com.claudemonitor.core.error.AppError
+import com.claudemonitor.core.error.ErrorHandler
+import com.claudemonitor.core.error.Resource
+import com.claudemonitor.core.error.toAppError
+import com.claudemonitor.data.api.ApiService
+import com.claudemonitor.data.api.AuthInterceptor
+import com.claudemonitor.data.local.DriverDao
+import com.claudemonitor.data.local.DriverEntity
+import com.claudemonitor.data.model.Driver
+import com.claudemonitor.data.model.DriverStatus
+import com.claudemonitor.data.model.HostInfo
+import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import kotlinx.serialization.json.Json
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.logging.HttpLoggingInterceptor
+import retrofit2.Retrofit
+import java.util.UUID
+import java.util.concurrent.TimeUnit
+import javax.inject.Inject
+import javax.inject.Singleton
+
+@Singleton
+class DriverRepository @Inject constructor(
+    private val driverDao: DriverDao,
+    private val errorHandler: ErrorHandler
+) {
+    private val json = Json { ignoreUnknownKeys = true }
+    private val apiClients = mutableMapOf<String, ApiService>()
+
+    val drivers: Flow<List<Driver>> = driverDao.getAllDrivers()
+        .map { entities -> entities.map { it.toDriver() } }
+
+    suspend fun addDriver(name: String, url: String, username: String, password: String): Driver {
+        val driver = Driver(
+            id = UUID.randomUUID().toString(),
+            name = name,
+            url = url.trimEnd('/'),
+            username = username,
+            password = password
+        )
+        driverDao.insertDriver(DriverEntity.fromDriver(driver))
+        return driver
+    }
+
+    suspend fun updateDriver(driver: Driver) {
+        driverDao.updateDriver(DriverEntity.fromDriver(driver))
+        apiClients.remove(driver.id) // Clear cached client
+    }
+
+    suspend fun deleteDriver(driverId: String) {
+        driverDao.deleteDriverById(driverId)
+        apiClients.remove(driverId)
+    }
+
+    suspend fun getDriver(driverId: String): Driver? {
+        return driverDao.getDriverById(driverId)?.toDriver()
+    }
+
+    fun getApiService(driver: Driver): ApiService {
+        return apiClients.getOrPut(driver.id) {
+            createApiService(driver)
+        }
+    }
+
+    private fun createApiService(driver: Driver): ApiService {
+        val loggingInterceptor = HttpLoggingInterceptor().apply {
+            level = HttpLoggingInterceptor.Level.BODY
+        }
+
+        val client = OkHttpClient.Builder()
+            .addInterceptor(AuthInterceptor(driver.username, driver.password))
+            .addInterceptor(loggingInterceptor)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .build()
+
+        val retrofit = Retrofit.Builder()
+            .baseUrl(driver.url + "/")
+            .client(client)
+            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+            .build()
+
+        return retrofit.create(ApiService::class.java)
+    }
+
+    suspend fun checkConnection(driver: Driver): DriverStatus {
+        return try {
+            val api = getApiService(driver)
+            val response = api.getHealth()
+            if (response.status == "ok") {
+                DriverStatus.ONLINE
+            } else {
+                DriverStatus.ERROR
+            }
+        } catch (e: Exception) {
+            // Log error but don't emit to global stream (silent)
+            errorHandler.handle(e, "checkConnection:${driver.name}", silent = true)
+            DriverStatus.OFFLINE
+        }
+    }
+
+    suspend fun getHostInfo(driver: Driver): Resource<HostInfo> {
+        return try {
+            val api = getApiService(driver)
+            val response = api.getHost()
+            if (response.data != null) {
+                Resource.success(response.data)
+            } else {
+                Resource.error(AppError.Api(
+                    message = response.error?.message ?: "Failed to get host info"
+                ))
+            }
+        } catch (e: Exception) {
+            val error = errorHandler.handle(e, "getHostInfo:${driver.name}")
+            Resource.error(error)
+        }
+    }
+
+    suspend fun addDriverWithValidation(
+        name: String,
+        url: String,
+        username: String,
+        password: String
+    ): Resource<Driver> {
+        // Validate inputs
+        if (name.isBlank()) {
+            return Resource.error(AppError.Validation(
+                message = "Name is required",
+                field = "name"
+            ))
+        }
+        if (url.isBlank()) {
+            return Resource.error(AppError.Validation(
+                message = "URL is required",
+                field = "url"
+            ))
+        }
+        if (password.isBlank()) {
+            return Resource.error(AppError.Validation(
+                message = "Password is required",
+                field = "password"
+            ))
+        }
+
+        return try {
+            val driver = addDriver(name, url, username, password)
+
+            // Test connection immediately
+            val status = checkConnection(driver)
+            if (status == DriverStatus.OFFLINE) {
+                // Still save the driver but warn
+                Resource.Success(driver)
+            } else {
+                Resource.success(driver)
+            }
+        } catch (e: Exception) {
+            val error = errorHandler.handle(e, "addDriver")
+            Resource.error(error)
+        }
+    }
+}
