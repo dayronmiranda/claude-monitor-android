@@ -278,7 +278,7 @@ fun AddDriverDialog(
                     onValueChange = { url = it; if (urlError != null) onClearError() },
                     label = { Text("URL") },
                     singleLine = true,
-                    placeholder = { Text("http://72.60.69.72:9003") },
+                    placeholder = { Text("http://hostname:port (e.g., http://localhost:9003)") },
                     isError = urlError != null,
                     supportingText = urlError?.let { { Text(it.message) } },
                     enabled = !isLoading,
