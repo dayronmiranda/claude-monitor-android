@@ -185,6 +185,27 @@ class TerminalViewModel @Inject constructor(
         _uiState.update { it.copy(error = null, showResumeOption = false) }
     }
 
+    fun clearBuffer() {
+        webSocketService.clearBuffer()
+    }
+
+    fun killTerminal() {
+        val driver = _uiState.value.driver ?: return
+        val terminal = _uiState.value.terminal ?: return
+
+        viewModelScope.launch {
+            terminalRepository.killTerminal(driver, terminal.id)
+                .onSuccess {
+                    _uiState.update { it.copy(error = AppError.Api(message = "Terminal stopped")) }
+                    webSocketService.disconnect()
+                }
+                .onFailure { e ->
+                    val appError = if (e is AppError) e else AppError.Api(message = e.message ?: "Failed to stop terminal", cause = e)
+                    _uiState.update { it.copy(error = appError) }
+                }
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
         webSocketService.disconnect()

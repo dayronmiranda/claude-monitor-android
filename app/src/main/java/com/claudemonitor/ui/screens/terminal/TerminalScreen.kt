@@ -26,6 +26,7 @@ import com.claudemonitor.data.api.ConnectionState
 import com.claudemonitor.ui.components.LoadingIndicator
 import com.claudemonitor.ui.components.TerminalKeyboard
 import com.claudemonitor.ui.theme.*
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -41,9 +42,26 @@ fun TerminalScreen(
 
     var command by remember { mutableStateOf("") }
     var showKeyboard by remember { mutableStateOf(true) }
+    var showMenu by remember { mutableStateOf(false) }
 
     val scrollState = rememberScrollState()
     val horizontalScrollState = rememberScrollState()
+
+    // Animated dots for connecting state
+    var animatedDots by remember { mutableStateOf("") }
+    LaunchedEffect(connectionState) {
+        if (connectionState == ConnectionState.CONNECTING) {
+            while (connectionState == ConnectionState.CONNECTING) {
+                animatedDots = "."
+                delay(500)
+                animatedDots = ".."
+                delay(500)
+                animatedDots = "..."
+                delay(500)
+            }
+            animatedDots = ""
+        }
+    }
 
     // Auto-scroll to bottom when buffer changes
     LaunchedEffect(buffer) {
@@ -77,7 +95,7 @@ fun TerminalScreen(
                             Text(
                                 when (connectionState) {
                                     ConnectionState.CONNECTED -> "Connected"
-                                    ConnectionState.CONNECTING -> "Connecting..."
+                                    ConnectionState.CONNECTING -> "Connecting$animatedDots"
                                     ConnectionState.DISCONNECTED -> "Disconnected"
                                     ConnectionState.ERROR -> "Error"
                                 },
@@ -101,8 +119,77 @@ fun TerminalScreen(
                                    else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    IconButton(onClick = { viewModel.reconnect() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Reconnect")
+                    IconButton(onClick = { showMenu = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                    }
+                    DropdownMenu(
+                        expanded = showMenu,
+                        onDismissRequest = { showMenu = false }
+                    ) {
+                        // Resume (if stopped)
+                        if (uiState.terminal?.status == "stopped" && uiState.terminal?.canResume == true) {
+                            DropdownMenuItem(
+                                text = { Text("Resume Terminal") },
+                                onClick = {
+                                    showMenu = false
+                                    viewModel.resumeTerminal()
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = null)
+                                }
+                            )
+                        }
+
+                        // Reconnect (if error)
+                        if (connectionState == ConnectionState.ERROR) {
+                            DropdownMenuItem(
+                                text = { Text("Reconnect") },
+                                onClick = {
+                                    showMenu = false
+                                    viewModel.reconnect()
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Refresh, contentDescription = null)
+                                }
+                            )
+                        }
+
+                        // Clear buffer
+                        DropdownMenuItem(
+                            text = { Text("Clear Output") },
+                            onClick = {
+                                showMenu = false
+                                viewModel.clearBuffer()
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Default.Clear, contentDescription = null)
+                            }
+                        )
+
+                        if (uiState.terminal != null) {
+                            Divider()
+
+                            // Stop terminal
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "Stop Terminal",
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    viewModel.killTerminal()
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.Stop,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            )
+                        }
                     }
                 }
             )
