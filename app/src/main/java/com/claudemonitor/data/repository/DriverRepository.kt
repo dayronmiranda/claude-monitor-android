@@ -19,10 +19,12 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
+import java.net.URL
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
+import android.util.Log
 
 @Singleton
 class DriverRepository @Inject constructor(
@@ -36,14 +38,24 @@ class DriverRepository @Inject constructor(
         .map { entities -> entities.map { it.toDriver() } }
 
     suspend fun addDriver(name: String, url: String, username: String, password: String): Driver {
+        val trimmedUrl = url.trimEnd('/')
+
+        // Validate URL format
+        val validationError = validateDriverUrl(trimmedUrl)
+        if (validationError != null) {
+            Log.e("DriverRepository", "Invalid driver URL: $validationError")
+            throw IllegalArgumentException("Invalid server URL: $validationError")
+        }
+
         val driver = Driver(
             id = UUID.randomUUID().toString(),
             name = name,
-            url = url.trimEnd('/'),
+            url = trimmedUrl,
             username = username,
             password = password
         )
         driverDao.insertDriver(DriverEntity.fromDriver(driver))
+        Log.d("DriverRepository", "Driver added: $name -> $trimmedUrl")
         return driver
     }
 
@@ -162,6 +174,46 @@ class DriverRepository @Inject constructor(
         } catch (e: Exception) {
             val error = errorHandler.handle(e, "addDriver")
             Resource.error(error)
+        }
+    }
+
+    /**
+     * Validates driver URL format and basic connectivity requirements
+     * Returns null if valid, or an error message if invalid
+     */
+    private fun validateDriverUrl(url: String): String? {
+        // Check if URL is blank
+        if (url.isBlank()) {
+            return "URL cannot be empty"
+        }
+
+        // Check if URL has proper scheme
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            return "URL must start with http:// or https://"
+        }
+
+        // Try to parse URL
+        return try {
+            val parsedUrl = URL(url)
+
+            // Check host
+            if (parsedUrl.host.isNullOrBlank()) {
+                return "URL must have a valid host"
+            }
+
+            // Check port if specified
+            if (parsedUrl.port != -1) {
+                if (parsedUrl.port < 1 || parsedUrl.port > 65535) {
+                    return "Port must be between 1 and 65535, got ${parsedUrl.port}"
+                }
+            }
+
+            // Log successful validation
+            Log.d("DriverRepository", "URL validation passed: host=${parsedUrl.host}, port=${parsedUrl.port}")
+            null // Valid URL
+        } catch (e: Exception) {
+            Log.e("DriverRepository", "URL validation failed: ${e.message}", e)
+            "Invalid URL format: ${e.message}"
         }
     }
 }

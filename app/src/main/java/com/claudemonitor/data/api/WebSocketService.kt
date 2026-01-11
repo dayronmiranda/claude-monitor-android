@@ -13,6 +13,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import okhttp3.*
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 enum class ConnectionState {
@@ -61,11 +62,28 @@ class WebSocketService(
     }
 
     private fun attemptConnect(baseUrl: String, terminalId: String, username: String, password: String, apiToken: String? = null) {
-        // Build WebSocket URL
-        val wsUrl = baseUrl
+        // Log detailed connection information for debugging
+        Log.d(TAG, "=== WebSocket Connection Attempt #${retryCount + 1} ===")
+        Log.d(TAG, "Base URL (original): $baseUrl")
+        Log.d(TAG, "Terminal ID: $terminalId")
+
+        // Build WebSocket URL with URL encoding for terminal ID
+        val encodedTerminalId = try {
+            URLEncoder.encode(terminalId, "UTF-8")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to encode terminal ID: ${e.message}", e)
+            terminalId
+        }
+
+        val wsUrlBase = baseUrl
             .replace("http://", "ws://")
             .replace("https://", "wss://")
-            .trimEnd('/') + "/api/terminals/$terminalId/ws"
+            .trimEnd('/')
+
+        val wsUrl = "$wsUrlBase/api/terminals/$encodedTerminalId/ws"
+
+        Log.d(TAG, "WebSocket URL: $wsUrl")
+        Log.d(TAG, "Using authentication: ${if (!apiToken.isNullOrBlank()) "X-API-Token" else "Basic Auth"}")
 
         val requestBuilder = Request.Builder()
             .url(wsUrl)
@@ -83,7 +101,7 @@ class WebSocketService(
 
         val request = requestBuilder.build()
 
-        Log.d(TAG, "Connecting to WebSocket: $baseUrl/api/terminals/$terminalId/ws (attempt ${retryCount + 1})")
+        Log.d(TAG, "Initiating WebSocket connection (attempt ${retryCount + 1})")
 
         webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -138,10 +156,22 @@ class WebSocketService(
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.e(TAG, "WebSocket failure: ${t.javaClass.simpleName}", t)
+                Log.e(TAG, "=== WebSocket Connection Failed ===")
+                Log.e(TAG, "Error type: ${t.javaClass.simpleName}")
+                Log.e(TAG, "Error message: ${t.message}")
+                Log.e(TAG, "Error cause: ${t.cause}")
                 if (response != null) {
-                    Log.e(TAG, "Response code: ${response.code}, message: ${response.message}")
+                    Log.e(TAG, "HTTP Response Code: ${response.code}")
+                    Log.e(TAG, "HTTP Response Message: ${response.message}")
+                    try {
+                        Log.e(TAG, "Response body: ${response.body?.string()}")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Could not read response body: ${e.message}")
+                    }
+                } else {
+                    Log.e(TAG, "No HTTP response available (network error)")
                 }
+                Log.e(TAG, "Retry attempt: $retryCount/$maxRetries", t)
 
                 // Determine if error is retryable
                 val shouldRetry = when {

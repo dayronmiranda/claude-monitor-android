@@ -32,7 +32,7 @@ object NetworkModule {
 
         return OkHttpClient.Builder()
             .addInterceptor(loggingInterceptor)
-            .connectTimeout(10, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS) // Increased from 10s to 15s for WebSocket handshake
             .readTimeout(60, TimeUnit.SECONDS) // Set to 60s to match backend pong timeout
             .writeTimeout(30, TimeUnit.SECONDS)
             .pingInterval(30, TimeUnit.SECONDS) // Keep-alive
