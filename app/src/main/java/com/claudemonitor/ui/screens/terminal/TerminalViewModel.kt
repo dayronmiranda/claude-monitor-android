@@ -3,6 +3,7 @@ package com.claudemonitor.ui.screens.terminal
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.claudemonitor.core.error.AppError
 import com.claudemonitor.data.api.ConnectionState
 import com.claudemonitor.data.api.WebSocketService
 import com.claudemonitor.data.model.Driver
@@ -19,8 +20,9 @@ data class TerminalUiState(
     val driver: Driver? = null,
     val terminal: Terminal? = null,
     val isLoading: Boolean = true,
-    val error: String? = null,
-    val connectionState: ConnectionState = ConnectionState.DISCONNECTED
+    val error: AppError? = null,
+    val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
+    val showResumeOption: Boolean = false
 )
 
 @HiltViewModel
@@ -55,10 +57,25 @@ class TerminalViewModel @Inject constructor(
             webSocketService.messages.collect { message ->
                 when (message) {
                     is WsOutputMessage.Error -> {
-                        _uiState.update { it.copy(error = message.message) }
+                        val appError = AppError.WebSocket(
+                            message = message.message,
+                            canReconnect = !message.message.contains("Terminal not found") &&
+                                           !message.message.contains("Authentication failed") &&
+                                           !message.message.contains("Access denied")
+                        )
+                        _uiState.update { it.copy(error = appError) }
+
+                        // Clear resume option on connection errors (not on terminal not found)
+                        if (!message.message.contains("Terminal not found")) {
+                            _uiState.update { it.copy(showResumeOption = false) }
+                        }
                     }
                     is WsOutputMessage.Closed -> {
-                        _uiState.update { it.copy(error = "Session closed") }
+                        val appError = AppError.WebSocket(
+                            message = "Terminal session closed",
+                            canReconnect = true
+                        )
+                        _uiState.update { it.copy(error = appError, showResumeOption = false) }
                     }
                     else -> {}
                 }
@@ -68,12 +85,12 @@ class TerminalViewModel @Inject constructor(
 
     private fun loadAndConnect() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, error = null) }
+            _uiState.update { it.copy(isLoading = true, error = null, showResumeOption = false) }
 
             try {
                 val driver = driverRepository.getDriver(driverId)
                 if (driver == null) {
-                    _uiState.update { it.copy(error = "Driver not found", isLoading = false) }
+                    _uiState.update { it.copy(error = AppError.NotFound(message = "Driver not found"), isLoading = false) }
                     return@launch
                 }
 
@@ -82,13 +99,40 @@ class TerminalViewModel @Inject constructor(
                 terminalRepository.getTerminal(driver, terminalId)
                     .onSuccess { terminal ->
                         _uiState.update { it.copy(terminal = terminal, isLoading = false) }
-                        connect(driver)
+
+                        // Check terminal status before connecting
+                        when (terminal.status) {
+                            "running" -> {
+                                connect(driver)
+                            }
+                            "stopped" -> {
+                                if (terminal.canResume) {
+                                    _uiState.update {
+                                        it.copy(
+                                            error = AppError.Api(message = "Terminal is stopped. You can resume it to continue."),
+                                            showResumeOption = true
+                                        )
+                                    }
+                                } else {
+                                    _uiState.update {
+                                        it.copy(error = AppError.Api(message = "Terminal has stopped and cannot be resumed."))
+                                    }
+                                }
+                            }
+                            else -> {
+                                _uiState.update {
+                                    it.copy(error = AppError.Api(message = "Unknown terminal status: ${terminal.status}"))
+                                }
+                            }
+                        }
                     }
                     .onFailure { e ->
-                        _uiState.update { it.copy(error = e.message, isLoading = false) }
+                        val appError = if (e is AppError) e else AppError.Api(message = e.message ?: "Failed to load terminal", cause = e)
+                        _uiState.update { it.copy(error = appError, isLoading = false) }
                     }
             } catch (e: Exception) {
-                _uiState.update { it.copy(error = e.message, isLoading = false) }
+                val appError = AppError.Unknown(message = e.message ?: "Unknown error", cause = e)
+                _uiState.update { it.copy(error = appError, isLoading = false) }
             }
         }
     }
@@ -101,6 +145,25 @@ class TerminalViewModel @Inject constructor(
             password = driver.password,
             apiToken = driver.apiToken
         )
+    }
+
+    fun resumeTerminal() {
+        val driver = _uiState.value.driver ?: return
+        val terminal = _uiState.value.terminal ?: return
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, error = null, showResumeOption = false) }
+
+            terminalRepository.resumeTerminal(driver, terminal.id)
+                .onSuccess { newTerminal ->
+                    _uiState.update { it.copy(terminal = newTerminal, isLoading = false) }
+                    connect(driver)
+                }
+                .onFailure { e ->
+                    val appError = if (e is AppError) e else AppError.Api(message = e.message ?: "Failed to resume terminal", cause = e)
+                    _uiState.update { it.copy(error = appError, isLoading = false) }
+                }
+        }
     }
 
     fun send(data: String) {
@@ -119,7 +182,7 @@ class TerminalViewModel @Inject constructor(
     }
 
     fun clearError() {
-        _uiState.update { it.copy(error = null) }
+        _uiState.update { it.copy(error = null, showResumeOption = false) }
     }
 
     override fun onCleared() {

@@ -5,12 +5,14 @@ import android.util.Log
 import com.claudemonitor.data.model.WsInputMessage
 import com.claudemonitor.data.model.WsOutputMessage
 import com.claudemonitor.data.model.WsResizeMessage
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import okhttp3.*
-import kotlinx.coroutines.delay
 import java.util.concurrent.TimeUnit
 
 enum class ConnectionState {
@@ -21,7 +23,8 @@ enum class ConnectionState {
 }
 
 class WebSocketService(
-    private val okHttpClient: OkHttpClient
+    private val okHttpClient: OkHttpClient,
+    private val applicationScope: CoroutineScope
 ) {
     companion object {
         private const val TAG = "WebSocketService"
@@ -86,6 +89,16 @@ class WebSocketService(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d(TAG, "WebSocket connected")
                 retryCount = 0
+
+                // Add connection message to buffer
+                _buffer.update { current ->
+                    if (current.isEmpty()) {
+                        "[Connected to terminal]\n"
+                    } else {
+                        current + "\n[Reconnected]\n"
+                    }
+                }
+
                 _connectionState.value = ConnectionState.CONNECTED
             }
 
@@ -110,6 +123,16 @@ class WebSocketService(
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.d(TAG, "WebSocket closed: $code $reason")
+
+                // Add final message to buffer
+                val finalMessage = when {
+                    code == 1000 -> "\n[Terminal closed normally: $reason]"
+                    else -> "\n[Connection closed: $reason (code: $code)]"
+                }
+                _buffer.update { current ->
+                    if (current.isNotEmpty()) current + finalMessage else current
+                }
+
                 _connectionState.value = ConnectionState.DISCONNECTED
                 _messages.tryEmit(WsOutputMessage.Closed(reason))
             }
@@ -120,19 +143,60 @@ class WebSocketService(
                     Log.e(TAG, "Response code: ${response.code}, message: ${response.message}")
                 }
 
-                val errorMsg = when (t) {
-                    is java.io.EOFException -> "Server closed connection (EOFException) - authentication or server issue"
-                    else -> t.message ?: "Connection failed"
+                // Determine if error is retryable
+                val shouldRetry = when {
+                    // Retry on transient network errors
+                    t is java.io.EOFException -> true
+                    t is java.net.SocketTimeoutException -> true
+                    // Don't retry on auth/not found errors
+                    response?.code in listOf(401, 403, 404) -> false
+                    // Don't retry on other protocol errors
+                    t is java.net.ProtocolException -> false
+                    // Retry on other IOExceptions
+                    t is java.io.IOException -> true
+                    else -> false
                 }
 
-                if (retryCount < maxRetries && t is java.io.EOFException) {
+                if (shouldRetry && retryCount < maxRetries) {
                     retryCount++
                     val backoffMs = 1000L * (1 shl (retryCount - 1)) // Exponential backoff
                     Log.d(TAG, "Retrying in ${backoffMs}ms (attempt $retryCount/$maxRetries)")
-                    // Note: In a real app, you'd use viewModelScope or a coroutine scope here
+
                     _connectionState.value = ConnectionState.CONNECTING
+
+                    // Actually schedule the retry with delay
+                    applicationScope.launch {
+                        delay(backoffMs)
+
+                        // Check if still should retry (could have been cancelled)
+                        if (_connectionState.value == ConnectionState.CONNECTING) {
+                            pendingConnection?.let { (baseUrl, terminalId, credentials) ->
+                                attemptConnect(
+                                    baseUrl = baseUrl,
+                                    terminalId = terminalId,
+                                    username = credentials.first,
+                                    password = credentials.second,
+                                    apiToken = credentials.third
+                                )
+                            }
+                        }
+                    }
                 } else {
+                    // Max retries exhausted or non-retryable error
                     _connectionState.value = ConnectionState.ERROR
+                    retryCount = 0  // Reset for next connection attempt
+
+                    // Better error messages based on error type
+                    val errorMsg = when {
+                        response?.code == 404 -> "Terminal not found. It may have been stopped or deleted."
+                        response?.code == 401 -> "Authentication failed. Check your credentials."
+                        response?.code == 403 -> "Access denied. You don't have permission to connect."
+                        t is java.io.EOFException -> "Server closed connection unexpectedly. Check server status."
+                        t is java.net.ProtocolException && response?.code != null ->
+                            "WebSocket upgrade failed (HTTP ${response.code}). Terminal may not be active."
+                        else -> t.message ?: "Connection failed"
+                    }
+
                     _messages.tryEmit(WsOutputMessage.Error(errorMsg))
                 }
             }

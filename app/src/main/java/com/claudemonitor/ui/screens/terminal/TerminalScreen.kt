@@ -133,7 +133,7 @@ fun TerminalScreen(
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
-                                uiState.error ?: "Connection error",
+                                uiState.error?.toUserMessage() ?: "Connection error",
                                 color = MaterialTheme.colorScheme.error
                             )
                             Spacer(modifier = Modifier.height(16.dp))
